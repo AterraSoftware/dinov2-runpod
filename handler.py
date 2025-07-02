@@ -3,37 +3,48 @@ from torchvision import transforms
 from PIL import Image
 import requests
 import io
+import runpod
 
-# Load the DINOv2 ViT-L/14 distilled model
-model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg')
+# Charger le modèle (DINOv2 ViT-L/14 Distilled)
+model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg', source='github')
 model.eval()
 
-# Define preprocessing
-preprocess = transforms.Compose([
-    transforms.Resize((224, 224)),
+# Préprocessing adapté à DINOv2
+transform = transforms.Compose([
+    transforms.Resize((518, 518)),
+    transforms.CenterCrop(518),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5], std=[0.5])
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
 ])
 
-def handler(event):
+def process_image_from_url(image_url):
     try:
-        image_url = event["input"].get("image_url")
-        if not image_url:
-            return {"error": "Missing 'image_url' in input"}
-
-        response = requests.get(image_url)
-        if response.status_code != 200:
-            return {"error": f"Failed to download image: {response.status_code}"}
-
+        # Télécharger et préparer l'image
+        response = requests.get(image_url, timeout=10)
+        response.raise_for_status()
         image = Image.open(io.BytesIO(response.content)).convert("RGB")
-        input_tensor = preprocess(image).unsqueeze(0)
+        tensor = transform(image).unsqueeze(0)
 
         with torch.no_grad():
-            output = model(input_tensor)
+            embedding = model(tensor)
 
-        vector = output.squeeze().tolist()
-
-        return {"vector": vector}
-
+        return {"vector": embedding.squeeze().tolist()}
+    
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Image download failed: {str(e)}"}
     except Exception as e:
-        return {"error": f"Exception occurred: {str(e)}"}
+        return {"error": f"Processing failed: {str(e)}"}
+
+# Fonction principale pour Runpod
+def handler(event):
+    image_url = event.get("input", {}).get("image_url", None)
+    if not image_url:
+        return {"error": "No image URL provided."}
+
+    return process_image_from_url(image_url)
+
+# Lancer le worker
+runpod.serverless.start({"handler": handler})
